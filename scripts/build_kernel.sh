@@ -223,11 +223,37 @@ make -j"$(nproc)" prepare 2>&1 | tail -5
 step "6. 构建 vmlinux"
 # -----------------------------------------------------------------------------
 echo "开始: $(date)"
-make -j"$(nproc)" vmlinux 2>&1 | tail -30 || {
-  echo "::error::vmlinux 构建失败"
+BUILD_LOG="$WORK/build.log"
+set +e
+make -j"$(nproc)" vmlinux > "$BUILD_LOG" 2>&1
+RC=$?
+set -e
+echo "结束: $(date)  exit=$RC"
+
+# 打印错误（不截断关键信息）
+if [ $RC -ne 0 ]; then
+  echo "::group::编译错误"
+  grep -nE 'error:|fatal error|Error [0-9]|\*\*\*|undefined reference|No such file' "$BUILD_LOG" | tail -60 || true
+  echo "::endgroup::"
+
+  echo "::group::错误上下文（首个 error 前后 20 行）"
+  FIRST=$(grep -nE 'error:|fatal error' "$BUILD_LOG" | head -1 | cut -d: -f1)
+  if [ -n "$FIRST" ]; then
+    S=$((FIRST>20 ? FIRST-20 : 1))
+    E=$((FIRST+20))
+    sed -n "${S},${E}p" "$BUILD_LOG"
+  else
+    tail -60 "$BUILD_LOG"
+  fi
+  echo "::endgroup::"
+
+  cp "$BUILD_LOG" "$OUTDIR/build.log" 2>/dev/null || true
+  echo "::error::vmlinux 构建失败 (exit=$RC)"
   exit 1
-}
-echo "结束: $(date)"
+fi
+
+# 成功也保留尾部
+tail -20 "$BUILD_LOG"
 
 # -----------------------------------------------------------------------------
 step "7. 产物"
