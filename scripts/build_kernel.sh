@@ -174,22 +174,110 @@ python3 /action/scripts/fix_subdir_selfpath.py "$K" 2>&1 | tail -2
 
 # 3.6b 无条件为所有含 .c 的目录补自身绝对路径
 echo "--- 3.7 无条件补自身路径 ---"
-# 注意：必须**追加到文件末尾**。
-# 若插到开头，模块里的 `ccflags-y :=`（赋值而非追加）会把它抹掉
-# （本地在 drivers/huawei_platform/hwsdp 踩过同样的坑）。
+# 必须**追加到文件末尾**：模块里的 `ccflags-y :=`（赋值）会覆盖开头的 += 行。
+# 但追加时要注意：若文件最后一行以反斜杠结尾（续行），直接追加会破坏语法
+# （本地踩过：clang-9: error: no such file or directory: '+='）。
 CNT=0
 while IFS= read -r mf; do
   d=$(dirname "$mf")
   ls "$d"/*.c >/dev/null 2>&1 || continue
   absd="$ABS/${d#./}"
   grep -qF "$absd/" "$mf" && continue
-  # 追加到末尾（换行后再写）
-  { [ -n "$(tail -c1 "$mf")" ] && echo; printf 'ccflags-y += -I%s/\n' "$absd"; } >> "$mf"
+
+  # 若末行以反斜杠续行，先插入一个空行终止它
+  LAST=$(tail -c1 "$mf" | od -An -c | tr -d ' ')
+  if tail -1 "$mf" | grep -q '\\$'; then
+    printf '\n' >> "$mf"
+  fi
+  # 确保末尾有换行
+  [ -n "$(tail -c1 "$mf")" ] && printf '\n' >> "$mf"
+  printf 'ccflags-y += -I%s/\n' "$absd" >> "$mf"
   CNT=$((CNT+1))
 done < <(find . -name 'Makefile' \
           -not -path './tools/*' -not -path './samples/*' \
           -not -path './Documentation/*' -not -path './scripts/*' 2>/dev/null)
-echo "  补自身路径（末尾追加）: $CNT 个目录"
+echo "  补自身路径（末尾追加，处理续行）: $CNT 个目录"
+
+# ---- 3.8 校验：确认没有破坏 Makefile 语法 ----
+echo "--- 3.8 Makefile 语法校验 ---"
+BAD=0
+while IFS= read -r mf; do
+  # 续行符后若紧跟 "ccflags-y +=" 说明被切断
+  if grep -qE '\\$' "$mf" 2>/dev/null; then
+    if grep -A1 -E '\\$' "$mf" 2>/dev/null | grep -qE '^ccflags-y \+='; then
+      echo "  ⚠️  可疑: $mf"
+      BAD=$((BAD+1))
+    fi
+  fi
+done < <(find drivers sound net fs kernel security -name 'Makefile' 2>/dev/null)
+echo "  可疑文件: $BAD"
+
+# ---- 3.9 针对性修复（通用逻辑覆盖不到的目录）----
+echo "--- 3.9 针对性修复 ---"
+
+# (a) da_separate_v3：子目录 Makefile 缺自身目录
+#     其父 Makefile 有 -I.../da_separate_v3/，但子目录编译不继承父级 ccflags-y
+F=sound/soc/codecs/hisi/da_separate/da_separate_v3/Makefile
+if [ -f "$F" ]; then
+  if ! grep -qF "$ABS/sound/soc/codecs/hisi/da_separate/da_separate_v3/" "$F"; then
+    { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
+    printf 'ccflags-y += -I%s/sound/soc/codecs/hisi/da_separate/da_separate_v3/\n' "$ABS" >> "$F"
+    echo "  ✅ da_separate_v3"
+  fi
+fi
+
+# (b) tpkit/3_0 与 hostprocessing：<huawei_ts_kit.h> 等同级头文件
+for F in drivers/devkit/tpkit/3_0/Makefile drivers/devkit/tpkit/hostprocessing/Makefile; do
+  [ -f "$F" ] || continue
+  D=$(dirname "$F")
+  ABSD="$ABS/${D#./}"
+  if ! grep -qF "$ABSD/" "$F"; then
+    { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
+    printf 'ccflags-y += -I%s/drivers/devkit/tpkit/\n'  "$ABS" >> "$F"
+    printf 'ccflags-y += -I%s/\n' "$ABSD" >> "$F"
+    echo "  ✅ $D"
+  fi
+done
+
+# (c) lcdkit：lcd_kit_adapt.h 在 kernel/hisi/adapt/
+F=drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/Makefile
+if [ -f "$F" ]; then
+  for sub in adapt include core common; do
+    P="$ABS/drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/$sub"
+    [ -d "$P" ] || continue
+    if ! grep -qF "$P/" "$F"; then
+      { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
+      printf 'ccflags-y += -I%s/\n' "$P" >> "$F"
+      echo "  ✅ lcdkit/$sub"
+    fi
+  done
+fi
+
+# (d) hwsdp：<inc/xxx.h> 相对模块根
+F=drivers/huawei_platform/hwsdp/Makefile
+if [ -f "$F" ]; then
+  for sub in "" "/inc"; do
+    P="$ABS/drivers/huawei_platform/hwsdp$sub"
+    if ! grep -qF "$P/" "$F"; then
+      { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
+      printf 'ccflags-y += -I%s/\n' "$P" >> "$F"
+      echo "  ✅ hwsdp$sub"
+    fi
+  done
+fi
+
+# (e) usb gadget function：function-hisi 被编进父目录目标
+F=drivers/usb/gadget/function/Makefile
+if [ -f "$F" ]; then
+  for sub in "" "/function-hisi"; do
+    P="$ABS/drivers/usb/gadget/function$sub"
+    if ! grep -qF "$P/" "$F"; then
+      { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
+      printf 'ccflags-y += -I%s/\n' "$P" >> "$F"
+      echo "  ✅ gadget/function$sub"
+    fi
+  done
+fi
 
 # -----------------------------------------------------------------------------
 step "4. 配置"
