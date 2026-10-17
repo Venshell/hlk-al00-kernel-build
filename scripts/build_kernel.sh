@@ -183,6 +183,7 @@ echo "--- 3.7 无条件补自身路径 ---"
 # 但追加时要注意：若文件最后一行以反斜杠结尾（续行），直接追加会破坏语法
 # （本地踩过：clang-9: error: no such file or directory: '+='）。
 CNT=0
+set +e
 while IFS= read -r mf; do
   d=$(dirname "$mf")
   ls "$d"/*.c >/dev/null 2>&1 || continue
@@ -203,6 +204,7 @@ while IFS= read -r mf; do
 done < <(find . -name 'Makefile' \
           -not -path './tools/*' -not -path './samples/*' \
           -not -path './Documentation/*' -not -path './scripts/*' 2>/dev/null)
+set -e
 echo "  补自身路径（末尾追加，处理续行）: $CNT 个目录"
 
 # ---- 3.8 校验并自动修复续行破坏 ----
@@ -210,6 +212,7 @@ echo "  补自身路径（末尾追加，处理续行）: $CNT 个目录"
 #       传给 clang 变成 "clang-9: error: no such file or directory: '+='"
 echo "--- 3.8 续行破坏校验+自动修复 ---"
 BAD=0; FIXED_LINE=0
+set +e
 while IFS= read -r mf; do
   if python3 - "$mf" <<'PYEOF'
 import sys, re
@@ -241,6 +244,7 @@ PYEOF
     fi
   fi
 done < <(find drivers sound net fs kernel security lib block crypto mm ipc -name 'Makefile' 2>/dev/null)
+set -e
 echo "  修复续行破坏: $FIXED_LINE 个文件"
 
 # 复查：仍有问题则报错
@@ -258,15 +262,18 @@ echo "--- 3.9 针对性修复 ---"
 # (a) da_separate_v3：子目录 Makefile 缺自身目录
 #     其父 Makefile 有 -I.../da_separate_v3/，但子目录编译不继承父级 ccflags-y
 # 用唯一标记判断，避免与父目录路径混淆（父目录 da_separate/ 是 v3 的前缀）
+# 注意：本函数在 `set -e` 下被调用，**必须始终返回 0**，
+# 否则脚本会在此静默退出（本地踩过：3.9 一进来就 exit 1）。
 mark_add() {
-  # $1 = Makefile, $2 = 目录绝对路径（不带尾斜杠）, $3 = 标记名
   local mf="$1" d="$2" tag="$3"
-  [ -f "$mf" ] || return 1
-  [ -d "$d" ] || return 1
-  # 已加过？
-  grep -qxF "# HLK_FIX_I: $d" "$mf" && return 1
+  if [ ! -f "$mf" ]; then echo "  - 跳过(无Makefile) $tag"; return 0; fi
+  if [ ! -d "$d" ]; then echo "  - 跳过(无目录) $tag"; return 0; fi
+  if grep -qxF "# HLK_FIX_I: $d" "$mf"; then
+    echo "  = 已存在 $tag"
+    return 0
+  fi
   if tail -1 "$mf" | grep -q '\\$'; then printf '\n\n' >> "$mf"; fi
-  [ -n "$(tail -c1 "$mf")" ] && printf '\n' >> "$mf"
+  if [ -n "$(tail -c1 "$mf")" ]; then printf '\n' >> "$mf"; fi
   printf 'ccflags-y += -I%s/\n# HLK_FIX_I: %s\n' "$d" "$d" >> "$mf"
   echo "  ✅ $tag"
   return 0
