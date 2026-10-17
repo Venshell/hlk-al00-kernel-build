@@ -27,6 +27,11 @@ set -euo pipefail
 SRC_TGZ="${1:?usage: build_kernel.sh <source.tar.gz> <outdir>}"
 OUTDIR="${2:?usage: build_kernel.sh <source.tar.gz> <outdir>}"
 WORK="${WORK:-$PWD/_work}"
+
+# 修复脚本目录（相对于本脚本自身，而非硬编码 /action）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "SCRIPT_DIR = $SCRIPT_DIR"
+ls -la "$SCRIPT_DIR" 2>/dev/null | head -10
 ABS="$(realpath "$WORK")"
 
 log() { echo "::group::$*"; }
@@ -133,12 +138,12 @@ sed -i 's|#include <slowpath_count.h>|#include "slowpath_count.h"|' \
 
 # ---- 3.3 相对 include（<./x> <../x> "./x" "../x"）----
 echo "--- 3.3 相对 include ---"
-cp /action/scripts/fix_relative_includes.py /tmp/ 2>/dev/null || true
-python3 /action/scripts/fix_relative_includes.py "$K" 2>&1 | tail -3
+# (不再复制到 /tmp)
+python3 "$SCRIPT_DIR/fix_relative_includes.py" "$K" 2>&1 | tail -5
 
 # ---- 3.4 EXTRA_CFLAGS -> ccflags-y，并把相对 -I 转绝对 ----
 echo "--- 3.4 Makefile cflags ---"
-python3 /action/scripts/fix_extra_cflags.py "$K" 2>&1 | tail -2
+python3 "$SCRIPT_DIR/fix_extra_cflags.py" "$K" 2>&1 | tail -5
 
 # 3.4b EXTRA_CFLAGS -> ccflags-y
 FIXED=0
@@ -170,7 +175,7 @@ done < <(grep -rl 'subdir-ccflags-y.*\$(srctree)' --include='Makefile' 2>/dev/nu
 
 # ---- 3.6 子目录补自身路径 ----
 echo "--- 3.6 子目录自身路径 ---"
-python3 /action/scripts/fix_subdir_selfpath.py "$K" 2>&1 | tail -2
+python3 "$SCRIPT_DIR/fix_subdir_selfpath.py" "$K" 2>&1 | tail -5
 
 # 3.6b 无条件为所有含 .c 的目录补自身绝对路径
 echo "--- 3.7 无条件补自身路径 ---"

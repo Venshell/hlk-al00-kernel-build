@@ -94,9 +94,7 @@ jobs:
           WORK: ${{ env.WORK }}
         run: |
           chmod +x scripts/build_kernel.sh
-          # 脚本通过 /action 引用本仓库的 scripts/ 目录
-          sudo mkdir -p /action
-          sudo cp -r scripts /action/scripts
+          # 脚本用 $SCRIPT_DIR（自身所在目录）定位修复脚本，无需复制到 /action
           sudo -E bash scripts/build_kernel.sh \
             "$WORK/${{ inputs.source_asset_name }}" \
             "$WORK/out"
