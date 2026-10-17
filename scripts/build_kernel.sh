@@ -26,7 +26,7 @@ set -euo pipefail
 
 SRC_TGZ="${1:?usage: build_kernel.sh <source.tar.gz> <outdir>}"
 OUTDIR="${2:?usage: build_kernel.sh <source.tar.gz> <outdir>}"
-WORK="${WORK:-/work}"
+WORK="${WORK:-$PWD/_work}"
 ABS="$(realpath "$WORK")"
 
 log() { echo "::group::$*"; }

@@ -24,9 +24,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # runner 用户对 /work 无写权限；用 HOME 下的目录
+  WORK: ${{ github.workspace }}/_work
+
 jobs:
   build:
-    # 16GB 内存；LTO 链接需要较多内存
     runs-on: ubuntu-22.04
     timeout-minutes: 350
 
@@ -44,6 +47,10 @@ jobs:
           echo "=== 工具 ==="
           python3 --version
           git --version
+          echo "=== 工作目录 ==="
+          echo "WORK=$WORK"
+          mkdir -p "$WORK"
+          touch "$WORK/.writetest" && echo "可写 ✅" && rm -f "$WORK/.writetest"
 
       - name: 安装依赖
         run: |
@@ -60,18 +67,18 @@ jobs:
           TAG: ${{ inputs.source_release_tag }}
           ASSET: ${{ inputs.source_asset_name }}
         run: |
-          mkdir -p /work
+          mkdir -p "$WORK"
           echo "从 Release 下载: $TAG / $ASSET"
           gh release download "$TAG" \
             --repo "${{ github.repository }}" \
             --pattern "$ASSET" \
-            --dir /work \
+            --dir "$WORK" \
             --clobber
-          ls -lh /work
-          echo "--- 校验 ---"
-          sha256sum /work/*.tar.gz
+          ls -lh "$WORK"
+          echo "--- 校验（期望 190000a724ac4556...）---"
+          sha256sum "$WORK"/*.tar.gz
 
-      - name: 检查网络可达性（用于拉工具链）
+      - name: 检查工具链源可达性
         run: |
           set +e
           for u in \
@@ -84,28 +91,28 @@ jobs:
 
       - name: 构建 vmlinux
         env:
-          WORK: /work
+          WORK: ${{ env.WORK }}
         run: |
           chmod +x scripts/build_kernel.sh
           # 脚本通过 /action 引用本仓库的 scripts/ 目录
           sudo mkdir -p /action
           sudo cp -r scripts /action/scripts
-          sudo bash scripts/build_kernel.sh \
-            "/work/${{ inputs.source_asset_name }}" \
-            "/work/out"
+          sudo -E bash scripts/build_kernel.sh \
+            "$WORK/${{ inputs.source_asset_name }}" \
+            "$WORK/out"
 
       - name: 产物概要
         if: always()
         run: |
-          echo "=== /work/out ==="
-          ls -la /work/out 2>&1 || true
-          if [ -f /work/out/vmlinux ]; then
+          echo "=== $WORK/out ==="
+          ls -la "$WORK/out" 2>&1 || true
+          if [ -f "$WORK/out/vmlinux" ]; then
             echo "--- vmlinux ---"
-            ls -lh /work/out/vmlinux
-            sha256sum /work/out/vmlinux
-            readelf -h /work/out/vmlinux | head -14 || true
+            ls -lh "$WORK/out/vmlinux"
+            sha256sum "$WORK/out/vmlinux"
+            readelf -h "$WORK/out/vmlinux" | head -14 || true
             echo "--- 段 ---"
-            readelf -S /work/out/vmlinux | head -20 || true
+            readelf -S "$WORK/out/vmlinux" | head -20 || true
           fi
 
       - name: 上传产物
@@ -114,9 +121,9 @@ jobs:
         with:
           name: hlk-vmlinux
           path: |
-            /work/out/vmlinux
-            /work/out/System.map
-            /work/out/kernel.config.txt
+            ${{ env.WORK }}/out/vmlinux
+            ${{ env.WORK }}/out/System.map
+            ${{ env.WORK }}/out/kernel.config.txt
           retention-days: 30
           if-no-files-found: error
 
@@ -126,6 +133,6 @@ jobs:
         with:
           name: build-logs-failure
           path: |
-            /work/**/*.log
+            ${{ env.WORK }}/**/*.log
           retention-days: 7
           if-no-files-found: ignore
