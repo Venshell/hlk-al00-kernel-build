@@ -109,6 +109,55 @@ else
   echo "❌ clang 标识不匹配，无法保证与设备一致"; exit 1
 fi
 
+
+# =============================================================================
+# 安全追加辅助：向 Makefile 追加一行 ccflags-y
+#   - 保证文件以 "\n" 结尾（否则新行会与原有末行拼接 → "xxx.onccflags-y"）
+#   - 若末条逻辑行以 \ 续行，先插空行终止（否则下一行被拼进同一逻辑行
+#     → clang-9: no such file or directory: '+='）
+# 用法: safe_append_ccflags <Makefile> <abspath> <tag>
+# =============================================================================
+safe_append_ccflags() {
+  local mf="$1" d="$2" tag="$3"
+  [ -n "$mf" ] && [ -n "$d" ] || return 0
+  python3 - "$mf" "$d" "$tag" <<'PYEOF' || true
+import sys, os, re
+mf, d, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+if not os.path.isfile(mf) or not os.path.isdir(d):
+    print(f"  - 跳过(缺文件/目录) {tag}")
+    sys.exit(0)
+try:
+    raw = open(mf, 'r', encoding='utf-8', errors='replace').read()
+except Exception as e:
+    print(f"  ! 读取失败 {tag}: {e}")
+    sys.exit(0)
+
+marker = f"# HLK_FIX_I: {d}"
+if marker in raw:
+    print(f"  = 已存在 {tag}")
+    sys.exit(0)
+
+# 1) 保证以换行结尾
+if raw and not raw.endswith('\n'):
+    raw += '\n'
+
+# 2) 判断最后一条非空逻辑行是否以 \ 结尾（续行）
+lines = raw.split('\n')
+last_nonempty = ''
+for ln in reversed(lines):
+    if ln.strip():
+        last_nonempty = ln
+        break
+if last_nonempty.rstrip().endswith('\\'):
+    raw += '\n'          # 插空行终止续行
+
+raw += f"ccflags-y += -I{d}/\n{marker}\n"
+open(mf, 'w', encoding='utf-8').write(raw)
+print(f"  ✅ {tag}")
+PYEOF
+  return 0
+}
+
 # -----------------------------------------------------------------------------
 step "3. 源码修复"
 # -----------------------------------------------------------------------------
@@ -251,53 +300,6 @@ echo "--- 3.9 针对性修复 ---"
 # (a) da_separate_v3：子目录 Makefile 缺自身目录
 #     其父 Makefile 有 -I.../da_separate_v3/，但子目录编译不继承父级 ccflags-y
 # 用唯一标记判断，避免与父目录路径混淆（父目录 da_separate/ 是 v3 的前缀）
-# =============================================================================
-# 安全追加辅助：向 Makefile 追加一行 ccflags-y
-#   - 保证文件以 "\n" 结尾（否则新行会与原有末行拼接 → "xxx.onccflags-y"）
-#   - 若末条逻辑行以 \ 续行，先插空行终止（否则下一行被拼进同一逻辑行
-#     → clang-9: no such file or directory: '+='）
-# 用法: safe_append_ccflags <Makefile> <abspath> <tag>
-# =============================================================================
-safe_append_ccflags() {
-  local mf="$1" d="$2" tag="$3"
-  [ -n "$mf" ] && [ -n "$d" ] || return 0
-  python3 - "$mf" "$d" "$tag" <<'PYEOF' || true
-import sys, os, re
-mf, d, tag = sys.argv[1], sys.argv[2], sys.argv[3]
-if not os.path.isfile(mf) or not os.path.isdir(d):
-    print(f"  - 跳过(缺文件/目录) {tag}")
-    sys.exit(0)
-try:
-    raw = open(mf, 'r', encoding='utf-8', errors='replace').read()
-except Exception as e:
-    print(f"  ! 读取失败 {tag}: {e}")
-    sys.exit(0)
-
-marker = f"# HLK_FIX_I: {d}"
-if marker in raw:
-    print(f"  = 已存在 {tag}")
-    sys.exit(0)
-
-# 1) 保证以换行结尾
-if raw and not raw.endswith('\n'):
-    raw += '\n'
-
-# 2) 判断最后一条非空逻辑行是否以 \ 结尾（续行）
-lines = raw.split('\n')
-last_nonempty = ''
-for ln in reversed(lines):
-    if ln.strip():
-        last_nonempty = ln
-        break
-if last_nonempty.rstrip().endswith('\\'):
-    raw += '\n'          # 插空行终止续行
-
-raw += f"ccflags-y += -I{d}/\n{marker}\n"
-open(mf, 'w', encoding='utf-8').write(raw)
-print(f"  ✅ {tag}")
-PYEOF
-  return 0
-}
 # 注意：本函数在 `set -e` 下被调用，**必须始终返回 0**，
 # 否则脚本会在此静默退出（本地踩过：3.9 一进来就 exit 1）。
 mark_add() {
