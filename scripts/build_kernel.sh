@@ -184,13 +184,14 @@ while IFS= read -r mf; do
   absd="$ABS/${d#./}"
   grep -qF "$absd/" "$mf" && continue
 
-  # 若末行以反斜杠续行，先插入一个空行终止它
-  LAST=$(tail -c1 "$mf" | od -An -c | tr -d ' ')
+  # 若末行以反斜杠续行，必须插入**空行**终止（单个 \n 无法终止续行，
+  # 会导致下一个 ccflags-y 行被拼进同一逻辑行 → clang-9: no such file: '+='）
   if tail -1 "$mf" | grep -q '\\$'; then
+    printf '\n\n' >> "$mf"
+  elif [ -n "$(tail -c1 "$mf")" ]; then
+    # 末尾无换行，补一个
     printf '\n' >> "$mf"
   fi
-  # 确保末尾有换行
-  [ -n "$(tail -c1 "$mf")" ] && printf '\n' >> "$mf"
   printf 'ccflags-y += -I%s/\n' "$absd" >> "$mf"
   CNT=$((CNT+1))
 done < <(find . -name 'Makefile' \
@@ -198,19 +199,52 @@ done < <(find . -name 'Makefile' \
           -not -path './Documentation/*' -not -path './scripts/*' 2>/dev/null)
 echo "  补自身路径（末尾追加，处理续行）: $CNT 个目录"
 
-# ---- 3.8 校验：确认没有破坏 Makefile 语法 ----
-echo "--- 3.8 Makefile 语法校验 ---"
-BAD=0
+# ---- 3.8 校验并自动修复续行破坏 ----
+# 症状：某行以 \ 结尾，下一行是 "ccflags-y +=" ⟹ 两者会被拼成一条逻辑行，
+#       传给 clang 变成 "clang-9: error: no such file or directory: '+='"
+echo "--- 3.8 续行破坏校验+自动修复 ---"
+BAD=0; FIXED_LINE=0
 while IFS= read -r mf; do
-  # 续行符后若紧跟 "ccflags-y +=" 说明被切断
-  if grep -qE '\\$' "$mf" 2>/dev/null; then
-    if grep -A1 -E '\\$' "$mf" 2>/dev/null | grep -qE '^ccflags-y \+='; then
-      echo "  ⚠️  可疑: $mf"
-      BAD=$((BAD+1))
+  if python3 - "$mf" <<'PYEOF'
+import sys, re
+p = sys.argv[1]
+try:
+    lines = open(p, encoding='utf-8', errors='replace').read().split('\n')
+except Exception:
+    sys.exit(1)
+out, fixed = [], 0
+for i, ln in enumerate(lines):
+    out.append(ln)
+    # 当前行以 \ 结尾，且下一行是 ccflags-y / subdir-ccflags-y / EXTRA_CFLAGS
+    if ln.rstrip().endswith('\\') and i + 1 < len(lines):
+        nxt = lines[i+1]
+        if re.match(r'^\s*(ccflags-y|subdir-ccflags-y|EXTRA_CFLAGS)\b', nxt):
+            out.append('')      # 插入空行终止续行
+            fixed += 1
+if fixed:
+    open(p, 'w', encoding='utf-8').write('\n'.join(out))
+sys.exit(10 if fixed else 0)
+PYEOF
+  then
+    :
+  else
+    rc=$?
+    if [ "$rc" = "10" ]; then
+      echo "  🔧 已修复续行: $mf"
+      FIXED_LINE=$((FIXED_LINE+1))
     fi
   fi
+done < <(find drivers sound net fs kernel security lib block crypto mm ipc -name 'Makefile' 2>/dev/null)
+echo "  修复续行破坏: $FIXED_LINE 个文件"
+
+# 复查：仍有问题则报错
+while IFS= read -r mf; do
+  if grep -qE '\\$' "$mf" 2>/dev/null && \
+     grep -A1 -E '\\$' "$mf" 2>/dev/null | grep -qE '^\s*ccflags-y \+='; then
+    echo "  ⚠️  仍有可疑: $mf"; BAD=$((BAD+1))
+  fi
 done < <(find drivers sound net fs kernel security -name 'Makefile' 2>/dev/null)
-echo "  可疑文件: $BAD"
+echo "  剩余可疑: $BAD"
 
 # ---- 3.9 针对性修复（通用逻辑覆盖不到的目录）----
 echo "--- 3.9 针对性修复 ---"
