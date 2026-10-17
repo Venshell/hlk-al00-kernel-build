@@ -1,0 +1,18 @@
+# 源码包不进 git（560 MB，通过 Release 分发）
+*.tar.gz
+*.tgz
+*.zip
+
+# 构建产物
+/work/
+out/
+*.o
+*.a
+*.ko
+vmlinux
+System.map
+
+# 临时
+__pycache__/
+*.pyc
+.DS_Store

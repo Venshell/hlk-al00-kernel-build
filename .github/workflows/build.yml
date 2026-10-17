@@ -1,0 +1,131 @@
+name: Build HLK-AL00 vmlinux
+
+# 目的：在云端编译与真机匹配的内核镜像（vmlinux.elf），用于反汇编取偏移。
+#
+# 为什么用云：
+#   本机 WSL 只有 9GB 内存，LTO 链接需 8+GB，反复 OOM。
+#   GitHub runner 16GB 内存 + 可直连 android.googlesource.com（本机不可达）。
+#
+# 源码来源：
+#   华为官方开源包，通过 Release 资产分发（560MB，不进 git 历史）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_release_tag:
+        description: '存放源码 tarball 的 Release tag'
+        required: false
+        default: 'source-v1'
+      source_asset_name:
+        description: 'Release 中的源码资产文件名'
+        required: false
+        default: 'HLK-AL00-AL00a_02_HM_opensource.tar.gz'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # 16GB 内存；LTO 链接需要较多内存
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          echo "=== runner ==="
+          uname -a
+          nproc
+          free -g
+          df -h /
+          echo "=== 工具 ==="
+          python3 --version
+          git --version
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            flex bison cpio libssl-dev libelf-dev bc rsync unzip \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          echo "--- 验证 ---"
+          for t in flex bison cpio bc; do printf '%-8s %s\n' "$t" "$(command -v $t || echo MISSING)"; done
+
+      - name: 下载源码包（Release 资产）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.source_release_tag }}
+          ASSET: ${{ inputs.source_asset_name }}
+        run: |
+          mkdir -p /work
+          echo "从 Release 下载: $TAG / $ASSET"
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "$ASSET" \
+            --dir /work \
+            --clobber
+          ls -lh /work
+          echo "--- 校验 ---"
+          sha256sum /work/*.tar.gz
+
+      - name: 检查网络可达性（用于拉工具链）
+        run: |
+          set +e
+          for u in \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86" \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"; do
+            printf '%-95s ' "$u"
+            timeout 25 git ls-remote --heads "$u" >/dev/null 2>&1 && echo OK || echo FAIL
+          done
+          set -e
+
+      - name: 构建 vmlinux
+        env:
+          WORK: /work
+        run: |
+          chmod +x scripts/build_kernel.sh
+          # 脚本通过 /action 引用本仓库的 scripts/ 目录
+          sudo mkdir -p /action
+          sudo cp -r scripts /action/scripts
+          sudo bash scripts/build_kernel.sh \
+            "/work/${{ inputs.source_asset_name }}" \
+            "/work/out"
+
+      - name: 产物概要
+        if: always()
+        run: |
+          echo "=== /work/out ==="
+          ls -la /work/out 2>&1 || true
+          if [ -f /work/out/vmlinux ]; then
+            echo "--- vmlinux ---"
+            ls -lh /work/out/vmlinux
+            sha256sum /work/out/vmlinux
+            readelf -h /work/out/vmlinux | head -14 || true
+            echo "--- 段 ---"
+            readelf -S /work/out/vmlinux | head -20 || true
+          fi
+
+      - name: 上传产物
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hlk-vmlinux
+          path: |
+            /work/out/vmlinux
+            /work/out/System.map
+            /work/out/kernel.config.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-failure
+          path: |
+            /work/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
