@@ -358,6 +358,24 @@ if [ -f "$F" ]; then
 fi
 
 # -----------------------------------------------------------------------------
+# ---- 3.10 诊断：dump 关键 Makefile 的最终状态 ----
+echo "--- 3.10 诊断 ---"
+for f in \
+  sound/usb/usbaudio_mailbox/Makefile \
+  drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/src/Makefile ; do
+  if [ -f "$f" ]; then
+    echo "### $f"
+    echo "  --- cat -A ---"
+    cat -A "$f" | tail -12
+    echo "  --- 末尾 40 字节 ---"
+    tail -c 40 "$f" | od -c
+    echo "  --- 检查: 末行是否有换行 ---"
+    if [ -n "$(tail -c1 "$f")" ]; then echo "  ❌ 末尾无换行"; else echo "  ✅ 末尾有换行"; fi
+    echo "  --- 检查: 是否存在 'xx.onccflags-y' 或单独的 '+=' ---"
+    grep -nE '\.o[a-z-]*ccflags-y|^\s*\+=' "$f" || echo "  ✅ 无拼接迹象"
+    echo ""
+  fi
+done
 step "4. 配置"
 # -----------------------------------------------------------------------------
 cd "$K"
