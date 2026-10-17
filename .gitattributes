@@ -1,0 +1,9 @@
+# 强制 shell / python 用 LF（Windows 下 CRLF 会导致 Linux runner 执行失败）
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+
+# 二进制
+*.tar.gz binary
+*.zip    binary
