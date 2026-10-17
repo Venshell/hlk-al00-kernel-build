@@ -174,18 +174,22 @@ python3 /action/scripts/fix_subdir_selfpath.py "$K" 2>&1 | tail -2
 
 # 3.6b 无条件为所有含 .c 的目录补自身绝对路径
 echo "--- 3.7 无条件补自身路径 ---"
+# 注意：必须**追加到文件末尾**。
+# 若插到开头，模块里的 `ccflags-y :=`（赋值而非追加）会把它抹掉
+# （本地在 drivers/huawei_platform/hwsdp 踩过同样的坑）。
 CNT=0
 while IFS= read -r mf; do
   d=$(dirname "$mf")
   ls "$d"/*.c >/dev/null 2>&1 || continue
   absd="$ABS/${d#./}"
   grep -qF "$absd/" "$mf" && continue
-  printf 'ccflags-y += -I%s/\n' "$absd" | cat - "$mf" > /tmp/mf.new && mv /tmp/mf.new "$mf"
+  # 追加到末尾（换行后再写）
+  { [ -n "$(tail -c1 "$mf")" ] && echo; printf 'ccflags-y += -I%s/\n' "$absd"; } >> "$mf"
   CNT=$((CNT+1))
 done < <(find . -name 'Makefile' \
           -not -path './tools/*' -not -path './samples/*' \
           -not -path './Documentation/*' -not -path './scripts/*' 2>/dev/null)
-echo "  补自身路径: $CNT 个目录"
+echo "  补自身路径（末尾追加）: $CNT 个目录"
 
 # -----------------------------------------------------------------------------
 step "4. 配置"

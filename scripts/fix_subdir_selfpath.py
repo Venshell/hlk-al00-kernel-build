@@ -72,7 +72,10 @@ def fix_makefile(dirpath, abs_root, dry_run=False):
     if dry_run:
         return 1
 
-    lines.insert(0, new_line)
+    # 必须追加到末尾：模块里的 ccflags-y := 会覆盖前面的 += 行
+    if lines and not lines[-1].endswith('n'):
+        lines[-1] += 'n'
+    lines.append(new_line)
     with open(mf, 'w', encoding='utf-8') as f:
         f.writelines(lines)
     return 1
