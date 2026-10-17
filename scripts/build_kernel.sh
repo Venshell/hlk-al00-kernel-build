@@ -187,7 +187,8 @@ while IFS= read -r mf; do
   d=$(dirname "$mf")
   ls "$d"/*.c >/dev/null 2>&1 || continue
   absd="$ABS/${d#./}"
-  grep -qF "$absd/" "$mf" && continue
+  # 用唯一标记判断（不能用前缀 grep：父目录是子目录路径的前缀，会误判已存在）
+  grep -qxF "# HLK_FIX_I: $absd" "$mf" && continue
 
   # 若末行以反斜杠续行，必须插入**空行**终止（单个 \n 无法终止续行，
   # 会导致下一个 ccflags-y 行被拼进同一逻辑行 → clang-9: no such file: '+='）
@@ -197,7 +198,7 @@ while IFS= read -r mf; do
     # 末尾无换行，补一个
     printf '\n' >> "$mf"
   fi
-  printf 'ccflags-y += -I%s/\n' "$absd" >> "$mf"
+  printf 'ccflags-y += -I%s/\n# HLK_FIX_I: %s\n' "$absd" "$absd" >> "$mf"
   CNT=$((CNT+1))
 done < <(find . -name 'Makefile' \
           -not -path './tools/*' -not -path './samples/*' \
@@ -256,41 +257,44 @@ echo "--- 3.9 针对性修复 ---"
 
 # (a) da_separate_v3：子目录 Makefile 缺自身目录
 #     其父 Makefile 有 -I.../da_separate_v3/，但子目录编译不继承父级 ccflags-y
-F=sound/soc/codecs/hisi/da_separate/da_separate_v3/Makefile
-if [ -f "$F" ]; then
-  if ! grep -qF "$ABS/sound/soc/codecs/hisi/da_separate/da_separate_v3/" "$F"; then
-    { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
-    printf 'ccflags-y += -I%s/sound/soc/codecs/hisi/da_separate/da_separate_v3/\n' "$ABS" >> "$F"
-    echo "  ✅ da_separate_v3"
-  fi
-fi
+# 用唯一标记判断，避免与父目录路径混淆（父目录 da_separate/ 是 v3 的前缀）
+mark_add() {
+  # $1 = Makefile, $2 = 目录绝对路径（不带尾斜杠）, $3 = 标记名
+  local mf="$1" d="$2" tag="$3"
+  [ -f "$mf" ] || return 1
+  [ -d "$d" ] || return 1
+  # 已加过？
+  grep -qxF "# HLK_FIX_I: $d" "$mf" && return 1
+  if tail -1 "$mf" | grep -q '\\$'; then printf '\n\n' >> "$mf"; fi
+  [ -n "$(tail -c1 "$mf")" ] && printf '\n' >> "$mf"
+  printf 'ccflags-y += -I%s/\n# HLK_FIX_I: %s\n' "$d" "$d" >> "$mf"
+  echo "  ✅ $tag"
+  return 0
+}
+
+mark_add sound/soc/codecs/hisi/da_separate/da_separate_v3/Makefile \
+         "$ABS/sound/soc/codecs/hisi/da_separate/da_separate_v3" \
+         "da_separate_v3"
 
 # (b) tpkit/3_0 与 hostprocessing：<huawei_ts_kit.h> 等同级头文件
-for F in drivers/devkit/tpkit/3_0/Makefile drivers/devkit/tpkit/hostprocessing/Makefile; do
-  [ -f "$F" ] || continue
-  D=$(dirname "$F")
-  ABSD="$ABS/${D#./}"
-  if ! grep -qF "$ABSD/" "$F"; then
-    { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
-    printf 'ccflags-y += -I%s/drivers/devkit/tpkit/\n'  "$ABS" >> "$F"
-    printf 'ccflags-y += -I%s/\n' "$ABSD" >> "$F"
-    echo "  ✅ $D"
-  fi
-done
+mark_add drivers/devkit/tpkit/3_0/Makefile \
+         "$ABS/drivers/devkit/tpkit/3_0" "tpkit/3_0"
+mark_add drivers/devkit/tpkit/3_0/Makefile \
+         "$ABS/drivers/devkit/tpkit" "tpkit(父)"
+mark_add drivers/devkit/tpkit/hostprocessing/Makefile \
+         "$ABS/drivers/devkit/tpkit/hostprocessing" "tpkit/hostprocessing"
+mark_add drivers/devkit/tpkit/hostprocessing/Makefile \
+         "$ABS/drivers/devkit/tpkit" "tpkit(父,hp)"
 
 # (c) lcdkit：lcd_kit_adapt.h 在 kernel/hisi/adapt/
-F=drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/Makefile
-if [ -f "$F" ]; then
-  for sub in adapt include core common; do
-    P="$ABS/drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/$sub"
-    [ -d "$P" ] || continue
-    if ! grep -qF "$P/" "$F"; then
-      { [ -n "$(tail -c1 "$F")" ] && printf '\n' >> "$F"; } 2>/dev/null
-      printf 'ccflags-y += -I%s/\n' "$P" >> "$F"
-      echo "  ✅ lcdkit/$sub"
-    fi
-  done
-fi
+for sub in adapt include core common src; do
+  mark_add drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/Makefile \
+           "$ABS/drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/$sub" \
+           "lcdkit/hisi/$sub"
+done
+mark_add drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/adapt/Makefile \
+         "$ABS/drivers/devkit/lcdkit/lcdkit3.0/kernel/hisi/adapt" \
+         "lcdkit/hisi/adapt(自身)"
 
 # (d) hwsdp：<inc/xxx.h> 相对模块根
 F=drivers/huawei_platform/hwsdp/Makefile
